@@ -39,7 +39,17 @@ for wiersz in kursor.fetchall():
         "url_allegro":wiersz[2]
     }
     lista.append(sprzet)
+# sprawdzenie, czy dzisiaj dane były już pobierane
+zapytanie_sprawdzajace = "select count(*) from allegro_przejsciowy where data_pobrania = cast(getdate() as date)"
+kursor.execute(zapytanie_sprawdzajace)
+liczba_dzisiejszych_wpisow = kursor.fetchone()[0]
 
+if liczba_dzisiejszych_wpisow > 0:
+    print("\n[!] Dzisiaj dane z Allegro zostały już pobrane [!]")
+    print("Zamykam skrypt, żeby nie dublować rekordów.")
+    kursor.close()
+    polaczenie.close()
+    sys.exit(0)
 def pobierz_ceny_z_allegro(lista_zakupow):
     # inicjalizacja przegladarki
     print("\nodpalam przegladarke")
@@ -82,11 +92,25 @@ def pobierz_ceny_z_allegro(lista_zakupow):
 
             print(f"  -> Ofert: {wolumen} | Min: {cena_min} | Max: {cena_max} | Śred. : {cena_srednia} | Mediana: {mediana}")
 
+            zapytanie_insert = """
+                insert into allegro_przejsciowy (id_sprzetu, data_pobrania, wolumen, cena_min, cena_max, srednia, mediana)
+                values (?, getdate(), ?, ?, ?, ?, ?)
+            """
+            wartosci = (przedmiot['id_sprzetu'], wolumen, cena_min, cena_max, cena_srednia, mediana)
+
+            try:
+                kursor.execute(zapytanie_insert, wartosci)
+                polaczenie.commit()
+                print("  [+] Zapisano pomyślnie w bazie")
+            except Exception as e:
+                polaczenie.rollback()
+                print(f"  [!] Błąd przy zapisie do bazy: {e}")
         else:
             print("  -> Błąd: Nie znalazłem żadnych ofert z ceną na tej stronie.")
 
     # zamykanie sesji
     driver.quit()
+    kursor.close()
+    polaczenie.close()
 
-# uruchomienie procesu
 pobierz_ceny_z_allegro(lista)
