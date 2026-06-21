@@ -1,68 +1,47 @@
-import pyodbc
 import sys
 import time
 import statistics
+import logging
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+from baza_danych import polacz_z_baza
 
-# polaczenie z baza
-conn_string = (
-    "Driver={ODBC Driver 17 for SQL Server};"
-    "Server=Maciek\\SQLEXPRESS;"
-    "Database=Monitor_Cen;"
-    "Trusted_Connection=yes;"
+# Konfiguracja logowania
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("historia_scraperow.log", encoding='utf-8'),
+        logging.StreamHandler()
+    ]
 )
 
-try:
-    print("Próbuję połączyć się z bazą danych")
-    polaczenie = pyodbc.connect(conn_string)
-    print("Połączono pomyślnie")
-except Exception as ex:
-    print(f"Błąd przy połączeniu z bazą danych, opis: {ex}")
-    sys.exit(1)
+def sprawdz_czy_pobrano_dzisiaj(kursor):
+    zapytanie = "select count(*) from xkom_przejsciowy where data_pobrania = cast(getdate() as date)"
+    kursor.execute(zapytanie)
+    if kursor.fetchone()[0] > 0:
+        logging.warning("Dzisiaj dane z X-Kom były pobierane.")
+        return True
+    return False
 
-# pobranie slownika podzespolow
-kursor = polaczenie.cursor()
-zapytanie ="""
+def pobierz_slownik(kursor):
+    zapytanie = """
         select id_sprzetu, nazwa_modelu, url_xkom 
         from slownik_podzespolow 
         where aktywny = 1 and url_xkom is not null
-        """
-kursor.execute(zapytanie)
+    """
+    kursor.execute(zapytanie)
+    return [{"id_sprzetu": w[0], "nazwa_modelu": w[1], "url_xkom": w[2]} for w in kursor.fetchall()]
 
-# mapowanie wynikow do listy
-lista=[]
-for wiersz in kursor.fetchall():
-    sprzet = {
-        "id_sprzetu":wiersz[0],
-        "nazwa_modelu":wiersz[1],
-        "url_xkom":wiersz[2]
-    }
-    lista.append(sprzet)
-
-# sprawdzenie, czy dzisiaj dane były już pobierane
-zapytanie_sprawdzajace = "select count(*) from xkom_przejsciowy where data_pobrania = cast(getdate() as date)"
-kursor.execute(zapytanie_sprawdzajace)
-liczba_dzisiejszych_wpisow = kursor.fetchone()[0]
-
-if liczba_dzisiejszych_wpisow > 0:
-    print("\n[!] Dzisiaj dane z X-kom zostały już pobrane [!]")
-    print("Zamykam skrypt, żeby nie dublować rekordów.")
-    kursor.close()
-    polaczenie.close()
-    sys.exit(0)
-
-
-def pobierz_ceny_z_xkom(lista_zakupow):
-    print("\nOdpalam przeglądarkę Playwright...")
+def pobierz_ceny_z_xkom(lista_zakupow, polaczenie, kursor):
+    logging.info("Odpalam przeglądarkę Playwright...")
 
     with sync_playwright() as p:
-        # Otwarcie przegladarki
-        przegladarka = p.chromium.launch(headless=False)
+        # Otwarcie przeglądarki
+        przegladarka = p.chromium.launch(headless=True)
         strona = przegladarka.new_page()
 
-        # definiowanie "przedmiot"
         for przedmiot in lista_zakupow:
-            print(f"\n--- Sprawdzam: {przedmiot['nazwa_modelu']} ---")
+            logging.info(f"--- Sprawdzam: {przedmiot['nazwa_modelu']} ---")
             bazowy_url = przedmiot['url_xkom']
 
             czyste_ceny_dla_sprzetu = []
@@ -78,7 +57,7 @@ def pobierz_ceny_z_xkom(lista_zakupow):
                 else:
                     aktualny_url = f"{bazowy_url}?page={numer_strony}"
 
-                print(f"  -> Ładuję stronę nr {numer_strony}...")
+                logging.info(f"Ładuję stronę nr {numer_strony}.")
                 strona.goto(aktualny_url)
 
                 strona.wait_for_timeout(2000)
@@ -86,25 +65,24 @@ def pobierz_ceny_z_xkom(lista_zakupow):
                 klasa_ceny = ".parts__Price-sc-fd70cef5-1"
 
                 try:
-                    strona.wait_for_selector(klasa_ceny, timeout=8000)
+                    strona.wait_for_selector(klasa_ceny, timeout=3000)
                 except PlaywrightTimeoutError:
-                    print("  -> Brak wyników na tej stronie (koniec ofert).")
+                    logging.info("Brak wyników na tej stronie (koniec ofert).")
                     break
 
                 brudne_ceny = strona.locator(klasa_ceny).all_inner_texts()
 
-                # te same ceny
+                # Zabezpieczenie przed zapętlaniem stron przez X-Kom
                 if brudne_ceny == poprzednie_brudne_ceny:
-                    print("  -> Osiągnięto koniec paginacji (sklep zapętla wyniki). Przerywam!")
+                    logging.info("Przerywam!")
                     break
 
-                # mniej niz 30 obiektow
+                # Ostatnia strona ma mniej niż 30 produktów
                 czy_ostatnia_strona = len(brudne_ceny) < 30
 
                 for brudna_cena in brudne_ceny:
                     try:
-                        czysty_string = brudna_cena.replace(" ", "").replace("\xa0", "").replace("zł", "").replace(",",
-                                                                                                                   ".").strip()
+                        czysty_string = brudna_cena.replace(" ", "").replace("\xa0", "").replace("zł", "").replace(",", ".").strip()
                         czysta_liczba = float(czysty_string)
                         czyste_ceny_dla_sprzetu.append(czysta_liczba)
                     except ValueError:
@@ -113,12 +91,11 @@ def pobierz_ceny_z_xkom(lista_zakupow):
                 poprzednie_brudne_ceny = brudne_ceny
                 numer_strony += 1
 
-                # Jeśli to ostatnia strona to wychodzimy
                 if czy_ostatnia_strona:
-                    print("  -> Pomyślnie zescrapowano ostatnią stronę ofert.")
+                    logging.info("Pomyślnie zescrapowano ostatnią stronę ofert.")
                     break
 
-            # Po skanie stron dla sprzętu
+            # Przygotowanie danych do sqla
             wolumen = len(czyste_ceny_dla_sprzetu)
 
             if wolumen > 0:
@@ -127,29 +104,35 @@ def pobierz_ceny_z_xkom(lista_zakupow):
                 cena_srednia = round(sum(czyste_ceny_dla_sprzetu) / wolumen, 2)
                 mediana = statistics.median(czyste_ceny_dla_sprzetu)
 
-                print(f"  [+] Ofert łącznie: {wolumen} | Min: {cena_min} | Max: {cena_max} | Śred. : {cena_srednia}")
+                logging.info(f"Ofert łącznie: {wolumen} | Min: {cena_min} | Max: {cena_max} | Śred. : {cena_srednia} | Mediana: {mediana}")
 
-                # zapis do bazy
+                # Zapis do bazy
                 zapytanie_insert = """
-                                insert into xkom_przejsciowy (id_sprzetu, data_pobrania, wolumen, cena_min, cena_max, srednia, mediana)
-                                values (?, getdate(), ?, ?, ?, ?, ?)
-                            """
+                    insert into xkom_przejsciowy (id_sprzetu, data_pobrania, wolumen, cena_min, cena_max, srednia, mediana)
+                    values (?, getdate(), ?, ?, ?, ?, ?)
+                """
                 wartosci = (przedmiot['id_sprzetu'], wolumen, cena_min, cena_max, cena_srednia, mediana)
 
                 try:
                     kursor.execute(zapytanie_insert, wartosci)
                     polaczenie.commit()
-                    print("  [+] Zapisano pomyślnie w MS SQL")
+                    logging.info("Zapisano pomyślnie w SQL")
                 except Exception as e:
                     polaczenie.rollback()
-                    print(f"  [!] Błąd przy zapisie do bazy: {e}")
+                    logging.error(f"Błąd przy zapisie do bazy: {e}")
             else:
-                print("  -> [!] Błąd: Nie znalazłem żadnych ofert dla tego podzespołu na żadnej stronie.")
+                logging.warning("Błąd: Nie było żadnych ofert dla tego podzespołu na żadnej stronie.")
 
-        # Zamykamy przeglądarkę po przejrzeniu wszystkich sprzętów
         przegladarka.close()
 
+# Odpalenie skryptu
+if __name__ == "__main__":
+    polaczenie = polacz_z_baza()
+    kursor = polaczenie.cursor()
 
-pobierz_ceny_z_xkom(lista)
-kursor.close()
-polaczenie.close()
+    if not sprawdz_czy_pobrano_dzisiaj(kursor):
+        lista = pobierz_slownik(kursor)
+        pobierz_ceny_z_xkom(lista, polaczenie, kursor)
+
+    kursor.close()
+    polaczenie.close()

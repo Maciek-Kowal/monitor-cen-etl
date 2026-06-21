@@ -1,71 +1,52 @@
-import pyodbc
 import sys
-import undetected_chromedriver as uc
 import time
-from bs4 import BeautifulSoup
 import statistics
+import logging
+import undetected_chromedriver as uc
+from bs4 import BeautifulSoup
+from baza_danych import polacz_z_baza
 
-# polaczenie z baza
-conn_string = (
-    "Driver={ODBC Driver 17 for SQL Server};"
-    "Server=Maciek\\SQLEXPRESS;"
-    "Database=Monitor_Cen;"
-    "Trusted_Connection=yes;"
+# Konfiguracja logowania
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("historia_scraperow.log", encoding='utf-8'),
+        logging.StreamHandler()
+    ]
 )
 
-try:
-    print("Próbuję połączyć się z bazą danych")
-    polaczenie = pyodbc.connect(conn_string)
-    print("Połączono pomyślnie")
-except Exception as ex:
-    print(f"Błąd przy połączeniu z bazą danych, opis: {ex}")
-    sys.exit(1)
+def sprawdz_czy_pobrano_dzisiaj(kursor):
+    zapytanie = "select count(*) from allegro_przejsciowy where data_pobrania = cast(getdate() as date)"
+    kursor.execute(zapytanie)
+    if kursor.fetchone()[0] > 0:
+        logging.warning("Dzisiaj dane z Allegro zostały były pobierane.")
+        return True
+    return False
 
-# pobranie slownika podzespolow
-kursor = polaczenie.cursor()
-zapytanie ="""
+def pobierz_slownik(kursor):
+    zapytanie = """
         select id_sprzetu, nazwa_modelu, url_allegro 
         from slownik_podzespolow 
         where aktywny = 1 and url_allegro is not null
-        """
-kursor.execute(zapytanie)
+    """
+    kursor.execute(zapytanie)
+    return [{"id_sprzetu": w[0], "nazwa_modelu": w[1], "url_allegro": w[2]} for w in kursor.fetchall()]
 
-# mapowanie wynikow do listy
-lista=[]
-for wiersz in kursor.fetchall():
-    sprzet = {
-        "id_sprzetu":wiersz[0],
-        "nazwa_modelu":wiersz[1],
-        "url_allegro":wiersz[2]
-    }
-    lista.append(sprzet)
-# sprawdzenie, czy dzisiaj dane były już pobierane
-zapytanie_sprawdzajace = "select count(*) from allegro_przejsciowy where data_pobrania = cast(getdate() as date)"
-kursor.execute(zapytanie_sprawdzajace)
-liczba_dzisiejszych_wpisow = kursor.fetchone()[0]
-
-if liczba_dzisiejszych_wpisow > 0:
-    print("\n[!] Dzisiaj dane z Allegro zostały już pobrane [!]")
-    print("Zamykam skrypt, żeby nie dublować rekordów.")
-    kursor.close()
-    polaczenie.close()
-    sys.exit(0)
-def pobierz_ceny_z_allegro(lista_zakupow):
-    # inicjalizacja przegladarki
-    print("\nodpalam przegladarke")
+def pobierz_ceny_z_allegro(lista_zakupow, polaczenie, kursor):
+    logging.info("Odpalam przeglądarkę Undetected Chromedriver.")
     driver = uc.Chrome(version_main=149)
+    driver.minimize_window()
 
     for przedmiot in lista_zakupow:
-        print(f"\nsprawdzam: {przedmiot['nazwa_modelu']}")
+        logging.info(f"Sprawdzam: {przedmiot['nazwa_modelu']}")
         driver.get(przedmiot['url_allegro'])
         time.sleep(2)
 
-        # parsowanie html
         html = driver.page_source
         zupa = BeautifulSoup(html, 'html.parser')
         oferty = zupa.find_all('article')
 
-        # ekstrakcja brudnych cen
         ceny_z_tej_strony = []
         klasa_ceny = "mli8_k4 msa3_z4 mqu1_1 mp0t_ji m9qz_yo mgmw_qw mgn2_27 mgn2_30_s"
 
@@ -76,41 +57,47 @@ def pobierz_ceny_z_allegro(lista_zakupow):
                     ceny_z_tej_strony.append(element_ceny.text)
 
         if len(ceny_z_tej_strony) > 0:
-            # czyszczenie danych
             czyste_ceny = []
             for brudna_cena in ceny_z_tej_strony:
-                czysty_string = brudna_cena.replace(" ", "").replace("\xa0", "").replace("zł", "").replace(",", ".").strip()
-                czysta_liczba = float(czysty_string)
-                czyste_ceny.append(czysta_liczba)
-
-            # agregacja i statystyki
+                try:
+                    czysty_string = brudna_cena.replace(" ", "").replace("\xa0", "").replace("zł", "").replace(",", ".").strip()
+                    czyste_ceny.append(float(czysty_string))
+                except ValueError:
+                    pass
+            # Przygotowanie danych do sqla
             wolumen = len(czyste_ceny)
-            cena_min = min(czyste_ceny)
-            cena_max = max(czyste_ceny)
-            cena_srednia = round(sum(czyste_ceny) / wolumen, 2)
-            mediana = statistics.median(czyste_ceny)
+            if wolumen > 0:
+                cena_min = min(czyste_ceny)
+                cena_max = max(czyste_ceny)
+                cena_srednia = round(sum(czyste_ceny) / wolumen, 2)
+                mediana = statistics.median(czyste_ceny)
 
-            print(f"  -> Ofert: {wolumen} | Min: {cena_min} | Max: {cena_max} | Śred. : {cena_srednia} | Mediana: {mediana}")
+                logging.info(f"Ofert: {wolumen} | Min: {cena_min} | Max: {cena_max} | Śred.: {cena_srednia} | Med.: {mediana}")
 
-            zapytanie_insert = """
-                insert into allegro_przejsciowy (id_sprzetu, data_pobrania, wolumen, cena_min, cena_max, srednia, mediana)
-                values (?, getdate(), ?, ?, ?, ?, ?)
-            """
-            wartosci = (przedmiot['id_sprzetu'], wolumen, cena_min, cena_max, cena_srednia, mediana)
-
-            try:
-                kursor.execute(zapytanie_insert, wartosci)
-                polaczenie.commit()
-                print("  [+] Zapisano pomyślnie w bazie")
-            except Exception as e:
-                polaczenie.rollback()
-                print(f"  [!] Błąd przy zapisie do bazy: {e}")
+                zapytanie_insert = """
+                    insert into allegro_przejsciowy (id_sprzetu, data_pobrania, wolumen, cena_min, cena_max, srednia, mediana)
+                    values (?, getdate(), ?, ?, ?, ?, ?)
+                """
+                try:
+                    kursor.execute(zapytanie_insert, (przedmiot['id_sprzetu'], wolumen, cena_min, cena_max, cena_srednia, mediana))
+                    polaczenie.commit()
+                    logging.info("Zapisano pomyślnie w bazie")
+                except Exception as e:
+                    polaczenie.rollback()
+                    logging.error(f"Błąd przy zapisie do bazy: {e}")
         else:
-            print("  -> Błąd: Nie znalazłem żadnych ofert z ceną na tej stronie.")
+            logging.warning("Błąd: Nie było żadnych ofert z ceną na tej stronie.")
 
-    # zamykanie sesji
     driver.quit()
+
+# Odplenie skryptu
+if __name__ == "__main__":
+    polaczenie = polacz_z_baza()
+    kursor = polaczenie.cursor()
+
+    if not sprawdz_czy_pobrano_dzisiaj(kursor):
+        lista = pobierz_slownik(kursor)
+        pobierz_ceny_z_allegro(lista, polaczenie, kursor)
+
     kursor.close()
     polaczenie.close()
-
-pobierz_ceny_z_allegro(lista)
