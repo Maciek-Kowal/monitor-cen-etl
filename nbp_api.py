@@ -12,6 +12,7 @@ logging.basicConfig(
     ]
 )
 
+
 def sprawdz_czy_pobrano_dzisiaj(kursor):
     zapytanie = "select count(*) from nbp_przejsciowy where data_pobrania = cast(getdate() as date)"
     kursor.execute(zapytanie)
@@ -20,26 +21,33 @@ def sprawdz_czy_pobrano_dzisiaj(kursor):
         return True
     return False
 
-# pobieranie danych
-waluty = ["usd", "eur"]
-kursy_walut = {}
-logging.info("Rozpoczynam pobieranie kursów walut z API NBP.")
-for i in waluty:
-    usd_link = f"http://api.nbp.pl/api/exchangerates/rates/a/{i}/?format=json"
-    odp = requests.get(usd_link)
-    dane = odp.json()
-    kurs = dane["rates"][0]["mid"]
-    kursy_walut[i] = kurs
-    logging.info(f"Pobrano pomyślnie kurs {i}: {kurs}")
-print (kursy_walut)
 
-
+# łączenie z bazą
 polaczenie = polacz_z_baza()
 kursor = polaczenie.cursor()
-zapytanie_insert = "insert into nbp_przejsciowy(kurs_dolar, kurs_euro) values (?,?)"
-kursor.execute(zapytanie_insert, kursy_walut["usd"], kursy_walut["eur"])
 
+if not sprawdz_czy_pobrano_dzisiaj(kursor):
 
-polaczenie.commit()
-logging.info("Dane poprawnie zapisane w bazie MS SQL. Koniec pracy.")
+    # pobieranie danych
+    waluty = ["usd", "eur"]
+    kursy_walut = {}
+    logging.info("Rozpoczynam pobieranie kursów walut z API NBP.")
+
+    for i in waluty:
+        usd_link = f"http://api.nbp.pl/api/exchangerates/rates/a/{i}/?format=json"
+        odp = requests.get(usd_link)
+        dane = odp.json()
+        kurs = dane["rates"][0]["mid"]
+        kursy_walut[i] = kurs
+        logging.info(f"Pobrano pomyślnie kurs {i}: {kurs}")
+
+    print(kursy_walut)
+
+    # Zapis do bazy
+    zapytanie_insert = "insert into nbp_przejsciowy(kurs_dolar, kurs_euro) values (?,?)"
+    kursor.execute(zapytanie_insert, kursy_walut["usd"], kursy_walut["eur"])
+    polaczenie.commit()
+    logging.info("Dane poprawnie zapisane w bazie MS SQL. Koniec pracy.")
+
+kursor.close()
 polaczenie.close()
