@@ -21,7 +21,7 @@ def sprawdz_czy_pobrano_dzisiaj(kursor):
     return False
 
 # pobieranie danych
-waluty = ["usd","eur"]
+waluty = ["usd", "eur"]
 kursy_walut = {}
 logging.info("Rozpoczynam pobieranie kursów walut z API NBP.")
 for i in waluty:

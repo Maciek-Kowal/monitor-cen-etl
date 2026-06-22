@@ -20,7 +20,7 @@ def sprawdz_czy_pobrano_dzisiaj(kursor):
     zapytanie = "select count(*) from allegro_przejsciowy where data_pobrania = cast(getdate() as date)"
     kursor.execute(zapytanie)
     if kursor.fetchone()[0] > 0:
-        logging.warning("Dzisiaj dane z Allegro zostały były pobierane.")
+        logging.warning("Dzisiaj dane z Allegro były pobierane.")
         return True
     return False
 
@@ -90,7 +90,7 @@ def pobierz_ceny_z_allegro(lista_zakupow, polaczenie, kursor):
 
     driver.quit()
 
-# Odplenie skryptu
+# Odpalenie skryptu
 if __name__ == "__main__":
     polaczenie = polacz_z_baza()
     kursor = polaczenie.cursor()
