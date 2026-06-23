@@ -35,13 +35,19 @@ def pobierz_slownik(kursor):
 
 def pobierz_ceny_z_allegro(lista_zakupow, polaczenie, kursor):
     logging.info("Odpalam przeglądarkę Undetected Chromedriver.")
-    driver = uc.Chrome(version_main=149)
-    driver.minimize_window()
+
+    # Opcje dla dockera
+    options = uc.ChromeOptions()
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--window-size=1920,1080")
+
+    driver = uc.Chrome(options=options, version_main=149)
 
     for przedmiot in lista_zakupow:
         logging.info(f"Sprawdzam: {przedmiot['nazwa_modelu']}")
         driver.get(przedmiot['url_allegro'])
-        time.sleep(2)
+        time.sleep(3)
 
         html = driver.page_source
         zupa = BeautifulSoup(html, 'html.parser')

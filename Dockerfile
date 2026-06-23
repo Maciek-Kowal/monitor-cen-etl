@@ -15,7 +15,15 @@ RUN curl -fSsL https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor
     && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" | tee /etc/apt/sources.list.d/google-chrome.list \
     && apt-get update \
     && apt-get install -y google-chrome-stable
-
+RUN apt-get update && apt-get install -y \
+    wget \
+    gnupg \
+    xvfb \
+    libnss3 \
+    libgconf-2-4 \
+    libxss1 \
+    libasound2 \
+    && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 
 # Instalacja bibliotek
