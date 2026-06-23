@@ -11,15 +11,18 @@ load_dotenv()
 def polacz_z_baza():
     serwer = os.getenv('DB_SERVER')
     baza = os.getenv('DB_DATABASE')
+    uzytkownik = os.getenv('DB_USER')
+    haslo = os.getenv('DB_PASSWORD')
 
-    # Wypisanie co wziął z pliku
-    logging.info(f"Parametry z .env -> Serwer: {serwer} | Baza: {baza}")
+    logging.info(f"Parametry z .env -> Serwer: {serwer} | Baza: {baza} | Uzytkownik: {uzytkownik}")
 
+    # Logowanie przez haslo
     conn_string = (
         "Driver={ODBC Driver 17 for SQL Server};"
         f"Server={serwer};"
         f"Database={baza};"
-        "Trusted_Connection=yes;"
+        f"UID={uzytkownik};"
+        f"PWD={haslo};"
     )
 
     try:
